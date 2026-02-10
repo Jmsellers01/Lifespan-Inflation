@@ -1,7 +1,6 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   CartesianGrid,
-  Legend,
   Line,
   LineChart,
   ResponsiveContainer,
@@ -10,16 +9,15 @@ import {
   YAxis,
 } from "recharts";
 
-type Units = "USD" | "BTC";
+type ScaleMode = "linear" | "log";
 
 type YearPoint = {
   year: number;
-  ratio: number;
-  E_nom_usd: number;
-  P_usd: number;
-  E_btc: number;
-  P_btc: number;
+  cumUsd: number;
+  cumBtc: number;
 };
+
+const FALLBACK_BTC_PRICE = 60_000;
 
 const formatPercent = (value: number) => `${value.toFixed(1)}%`;
 
@@ -39,144 +37,151 @@ const formatCompactCurrency = (value: number) =>
     maximumFractionDigits: 1,
   }).format(value);
 
-const formatBtc = (value: number) => `${value.toFixed(6)} BTC`;
+const formatBtc = (value: number) => {
+  const formatted = value.toFixed(6).replace(/\.0+$/, "").replace(/(\.\d*?)0+$/, "$1");
+  return `${formatted} BTC`;
+};
 
-const formatCompactBtc = (value: number) => `${value.toFixed(3)} BTC`;
+const formatCompactBtc = (value: number) =>
+  value.toFixed(6).replace(/\.0+$/, "").replace(/(\.\d*?)0+$/, "$1");
+
+const formatUpdatedAt = (iso: string | null) => {
+  if (!iso) {
+    return "Not available";
+  }
+
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) {
+    return "Not available";
+  }
+
+  return date.toLocaleString();
+};
 
 const clamp = (value: number, min: number, max: number) =>
   Math.min(Math.max(value, min), max);
 
 const App = () => {
-  const [units, setUnits] = useState<Units>("USD");
   const [inflationPercent, setInflationPercent] = useState(3.0);
   const [assetGrowthPercent, setAssetGrowthPercent] = useState(7.0);
   const [extraYears, setExtraYears] = useState(10);
   const [annualExpenseToday, setAnnualExpenseToday] = useState(60_000);
-  const [startingPortfolio, setStartingPortfolio] = useState(1_000_000);
+  const [scaleMode, setScaleMode] = useState<ScaleMode>("linear");
 
-  const {
-    series,
-    lifespanInflationFactor,
-    lifespanInflationPercent,
-    finalRatio,
-    finalAnnualExpenseUsd,
-    finalAnnualExpenseBtc,
-    totalExpensesUsd,
-    totalExpensesBtc,
-    avgAnnualExpenseUsd,
-    avgAnnualExpenseBtc,
-    finalPortfolioUsd,
-    finalPortfolioBtc,
-    depletionYear,
-  } = useMemo(() => {
-    const i = inflationPercent / 100;
-    const a = assetGrowthPercent / 100;
+  const [fetchedBtcPrice, setFetchedBtcPrice] = useState(FALLBACK_BTC_PRICE);
+  const [btcPriceInput, setBtcPriceInput] = useState(String(FALLBACK_BTC_PRICE));
+  const [btcUpdatedAt, setBtcUpdatedAt] = useState<string | null>(null);
+  const [btcFetchWarning, setBtcFetchWarning] = useState<string | null>(
+    "Using fallback BTC price until market data loads.",
+  );
 
-    const ratioBase = (1 + i) / (1 + a);
-    const lif = Math.pow(ratioBase, extraYears) - 1;
-
-    const points: YearPoint[] = [];
-    let runningUsdExpensesTotal = 0;
-    let runningBtcExpensesTotal = 0;
-    let portfolioUsd = startingPortfolio;
-    let depletion: number | null = null;
-
-    for (let k = 0; k <= extraYears; k += 1) {
-      const ratio = Math.pow(ratioBase, k);
-      const btcUsdIndex = Math.pow(1 + a, k);
-      const nominalExpenseUsd = annualExpenseToday * Math.pow(1 + i, k);
-
-      if (k > 0) {
-        runningUsdExpensesTotal += nominalExpenseUsd;
-      }
-
-      if (k > 0) {
-        portfolioUsd = portfolioUsd * (1 + a) - nominalExpenseUsd;
-        if (depletion === null && portfolioUsd <= 0) {
-          depletion = k;
+  useEffect(() => {
+    const loadBtcPrice = async () => {
+      try {
+        const response = await fetch(
+          "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd&include_last_updated_at=true",
+        );
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
         }
+
+        const payload = (await response.json()) as {
+          bitcoin?: { usd?: number; last_updated_at?: number };
+        };
+
+        const usdPrice = payload.bitcoin?.usd;
+        if (!usdPrice || usdPrice <= 0) {
+          throw new Error("CoinGecko response missing positive usd price");
+        }
+
+        const updatedIso = payload.bitcoin?.last_updated_at
+          ? new Date(payload.bitcoin.last_updated_at * 1000).toISOString()
+          : new Date().toISOString();
+
+        setFetchedBtcPrice(usdPrice);
+        setBtcPriceInput(String(usdPrice));
+        setBtcUpdatedAt(updatedIso);
+        setBtcFetchWarning(null);
+      } catch {
+        setFetchedBtcPrice(FALLBACK_BTC_PRICE);
+        setBtcPriceInput(String(FALLBACK_BTC_PRICE));
+        setBtcUpdatedAt(null);
+        setBtcFetchWarning("Could not fetch BTC price from CoinGecko. Using fallback P0 = 60,000 USD.");
       }
+    };
 
-      const expenseBtc = nominalExpenseUsd / btcUsdIndex;
-      const portfolioBtc = portfolioUsd / btcUsdIndex;
+    void loadBtcPrice();
+  }, []);
 
-      if (k > 0) {
-        runningBtcExpensesTotal += expenseBtc;
-      }
-
-      points.push({
-        year: k,
-        ratio,
-        E_nom_usd: nominalExpenseUsd,
-        P_usd: portfolioUsd,
-        E_btc: expenseBtc,
-        P_btc: portfolioBtc,
-      });
+  const effectiveBtcPrice = useMemo(() => {
+    const parsed = Number(btcPriceInput);
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+      return fetchedBtcPrice;
     }
+    return parsed;
+  }, [btcPriceInput, fetchedBtcPrice]);
 
-    const finalPoint = points[points.length - 1] ?? {
-      ratio: 1,
-      E_nom_usd: annualExpenseToday,
-      E_btc: annualExpenseToday,
-      P_usd: startingPortfolio,
-      P_btc: startingPortfolio,
-    };
+  const { series, chartSeries, cumUsdAtT, cumBtcAtT, lifespanInflationFactor, minPositiveUsd, minPositiveBtc } =
+    useMemo(() => {
+      const i = inflationPercent / 100;
+      const a = assetGrowthPercent / 100;
 
-    return {
-      series: points,
-      lifespanInflationFactor: lif,
-      lifespanInflationPercent: lif * 100,
-      finalRatio: finalPoint.ratio,
-      finalAnnualExpenseUsd: finalPoint.E_nom_usd,
-      finalAnnualExpenseBtc: finalPoint.E_btc,
-      totalExpensesUsd: runningUsdExpensesTotal,
-      totalExpensesBtc: runningBtcExpensesTotal,
-      avgAnnualExpenseUsd: extraYears > 0 ? runningUsdExpensesTotal / extraYears : 0,
-      avgAnnualExpenseBtc: extraYears > 0 ? runningBtcExpensesTotal / extraYears : 0,
-      finalPortfolioUsd: finalPoint.P_usd,
-      finalPortfolioBtc: finalPoint.P_btc,
-      depletionYear: depletion,
-    };
-  }, [
-    inflationPercent,
-    assetGrowthPercent,
-    extraYears,
-    annualExpenseToday,
-    startingPortfolio,
-  ]);
+      const ratioBase = (1 + i) / (1 + a);
+      const lif = Math.pow(ratioBase, extraYears) - 1;
 
-  const expenseDataKey = units === "USD" ? "E_nom_usd" : "E_btc";
-  const portfolioDataKey = units === "USD" ? "P_usd" : "P_btc";
-  const valueFormatter = units === "USD" ? formatCurrency : formatBtc;
-  const axisFormatter = units === "USD" ? formatCompactCurrency : formatCompactBtc;
+      const points: YearPoint[] = [];
+      let runningUsdTotal = 0;
+      let runningBtcTotal = 0;
+
+      for (let k = 0; k <= extraYears; k += 1) {
+        const expenseUsd = annualExpenseToday * Math.pow(1 + i, k);
+        const btcPrice = effectiveBtcPrice * Math.pow(1 + a, k);
+        const expenseBtc = expenseUsd / btcPrice;
+
+        if (k > 0) {
+          runningUsdTotal += expenseUsd;
+          runningBtcTotal += expenseBtc;
+        }
+
+        points.push({
+          year: k,
+          cumUsd: runningUsdTotal,
+          cumBtc: runningBtcTotal,
+        });
+      }
+
+      const trimmedPoints = scaleMode === "log" ? points.filter((point) => point.year > 0) : points;
+
+      const usdPositives = trimmedPoints.map((point) => point.cumUsd).filter((value) => value > 0);
+      const btcPositives = trimmedPoints.map((point) => point.cumBtc).filter((value) => value > 0);
+
+      return {
+        series: points,
+        chartSeries: trimmedPoints,
+        cumUsdAtT: points[points.length - 1]?.cumUsd ?? 0,
+        cumBtcAtT: points[points.length - 1]?.cumBtc ?? 0,
+        lifespanInflationFactor: lif,
+        minPositiveUsd: usdPositives.length > 0 ? Math.min(...usdPositives) : 1,
+        minPositiveBtc: btcPositives.length > 0 ? Math.min(...btcPositives) : 1e-6,
+      };
+    }, [inflationPercent, assetGrowthPercent, extraYears, annualExpenseToday, effectiveBtcPrice, scaleMode]);
+
+  const warnings = [
+    btcFetchWarning,
+    scaleMode === "log" ? "Log scale excludes year 0 to avoid non-positive values." : null,
+    Number(btcPriceInput) <= 0 ? "BTC price override must be positive. Using latest fetched value." : null,
+  ].filter(Boolean) as string[];
 
   return (
     <main className="page">
       <div className="card">
         <header className="header">
           <p className="eyebrow">Lifespan Inflation Model</p>
-          <h1>Inflation-to-Asset Compounding Over Extra Years Lived</h1>
-          <p className="subtext">
-            Lifespan Inflation Factor = ((1 + i) / (1 + a))^T - 1
-          </p>
+          <h1>Cumulative Cost Over Extra Years Lived</h1>
+          <p className="subtext">E_usd(k) = E0*(1+i)^k, P_btc(k) = P0*(1+a)^k, E_btc(k) = E_usd(k)/P_btc(k)</p>
         </header>
 
         <section className="controls" aria-label="Inputs">
-          <div className="control">
-            <label htmlFor="units">Units</label>
-            <div className="control-row control-row--toggle">
-              <select
-                id="units"
-                value={units}
-                onChange={(event) => setUnits(event.target.value as Units)}
-              >
-                <option value="USD">USD</option>
-                <option value="BTC">BTC</option>
-              </select>
-              <span className="value">{units}</span>
-            </div>
-          </div>
-
           <div className="control">
             <label htmlFor="inflation">Inflation (i)</label>
             <div className="control-row">
@@ -243,100 +248,123 @@ const App = () => {
           </div>
 
           <div className="control">
-            <label htmlFor="portfolio">Starting portfolio (P0)</label>
+            <label htmlFor="btcPrice">BTC price override (P0, USD)</label>
             <div className="control-row">
               <input
-                id="portfolio"
-                type="range"
-                min={0}
-                max={5_000_000}
-                step={10_000}
-                value={startingPortfolio}
-                onChange={(event) => setStartingPortfolio(Number(event.target.value))}
+                id="btcPrice"
+                type="number"
+                min={1}
+                step={100}
+                value={btcPriceInput}
+                onChange={(event) => setBtcPriceInput(event.target.value)}
               />
-              <span className="value">{formatCurrency(startingPortfolio)}</span>
+              <span className="value">{formatCurrency(effectiveBtcPrice)}</span>
+            </div>
+            <small className="meta">Current fetched price: {formatCurrency(fetchedBtcPrice)}</small>
+            <small className="meta">Last updated: {formatUpdatedAt(btcUpdatedAt)}</small>
+          </div>
+
+          <div className="control">
+            <label htmlFor="scaleMode">Scale</label>
+            <div className="control-row control-row--toggle">
+              <select
+                id="scaleMode"
+                value={scaleMode}
+                onChange={(event) => setScaleMode(event.target.value as ScaleMode)}
+              >
+                <option value="linear">Linear</option>
+                <option value="log">Log</option>
+              </select>
+              <span className="value">{scaleMode === "linear" ? "Linear" : "Log"}</span>
             </div>
           </div>
         </section>
 
         <section className="summary" aria-label="Summary outputs">
           <div>
-            <span>Lifespan Inflation Factor (LIF)</span>
+            <span>Cumulative USD cost at T</span>
+            <strong>{formatCurrency(cumUsdAtT)}</strong>
+          </div>
+          <div>
+            <span>Cumulative BTC cost at T</span>
+            <strong>{formatBtc(cumBtcAtT)}</strong>
+          </div>
+          <div>
+            <span>Lifespan Inflation Factor LIF(T)</span>
             <strong>{lifespanInflationFactor.toFixed(4)}</strong>
           </div>
           <div>
-            <span>Lifespan Inflation %</span>
-            <strong>{formatPercent(lifespanInflationPercent)}</strong>
+            <span>LIF(T) as %</span>
+            <strong>{formatPercent(lifespanInflationFactor * 100)}</strong>
           </div>
           <div>
-            <span>Final ratio R(T)</span>
-            <strong>{finalRatio.toFixed(4)}</strong>
+            <span>Warnings</span>
+            <strong>{warnings.length > 0 ? warnings.join(" ") : "None"}</strong>
           </div>
           <div>
-            <span>Final annual expense ({units})</span>
+            <span>Plotted points</span>
             <strong>
-              {units === "USD"
-                ? formatCurrency(finalAnnualExpenseUsd)
-                : formatBtc(finalAnnualExpenseBtc)}
+              {chartSeries.length} of {series.length} years
             </strong>
-          </div>
-          <div>
-            <span>Total expenses over extra years ({units})</span>
-            <strong>
-              {units === "USD"
-                ? formatCurrency(totalExpensesUsd)
-                : formatBtc(totalExpensesBtc)}
-            </strong>
-          </div>
-          <div>
-            <span>Average annual expense ({units})</span>
-            <strong>
-              {units === "USD"
-                ? formatCurrency(avgAnnualExpenseUsd)
-                : formatBtc(avgAnnualExpenseBtc)}
-            </strong>
-          </div>
-          <div>
-            <span>Final portfolio ({units})</span>
-            <strong>
-              {units === "USD" ? formatCurrency(finalPortfolioUsd) : formatBtc(finalPortfolioBtc)}
-            </strong>
-          </div>
-          <div>
-            <span>Portfolio depletion year</span>
-            <strong>{depletionYear === null ? "Not depleted" : `Year ${depletionYear}`}</strong>
           </div>
         </section>
 
-        <section className="chart" aria-label="Expense and portfolio chart">
-          <ResponsiveContainer width="100%" height={360}>
-            <LineChart data={series} margin={{ top: 8, right: 24, left: 8, bottom: 8 }}>
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey="year" label={{ value: "Year", position: "insideBottom", offset: -6 }} />
-              <YAxis tickFormatter={axisFormatter} width={120} />
-              <Tooltip
-                labelFormatter={(label) => `Year ${label}`}
-                formatter={(value: number, name: string) => [valueFormatter(value), name]}
-              />
-              <Legend />
-              <Line
-                type="monotone"
-                dataKey={expenseDataKey}
-                name="Annual Expense"
-                stroke="#2563eb"
-                strokeWidth={2.5}
-                dot={false}
-              />
-              <Line
-                type="monotone"
-                dataKey={portfolioDataKey}
-                name="Portfolio Balance"
-                stroke="#16a34a"
-                strokeWidth={2.5}
-                dot={false}
-              />
-            </LineChart>
-          </ResponsiveContainer>
+        <section className="chart-stack" aria-label="Cumulative cost charts">
+          <div className="chart">
+            <h2>Chart A: Cumulative cost (USD)</h2>
+            <ResponsiveContainer width="100%" height={300}>
+              <LineChart data={chartSeries} margin={{ top: 8, right: 24, left: 8, bottom: 8 }}>
+                <CartesianGrid strokeDasharray="3 3" />
+                <XAxis dataKey="year" label={{ value: "Year", position: "insideBottom", offset: -6 }} />
+                <YAxis
+                  width={120}
+                  scale={scaleMode}
+                  domain={scaleMode === "log" ? [minPositiveUsd, "auto"] : ["auto", "auto"]}
+                  tickFormatter={formatCompactCurrency}
+                />
+                <Tooltip
+                  labelFormatter={(label) => `Year ${label}`}
+                  formatter={(value: number) => [formatCurrency(value), "Cumulative USD"]}
+                />
+                <Line
+                  type="monotone"
+                  dataKey="cumUsd"
+                  name="Cumulative USD"
+                  stroke="#2563eb"
+                  strokeWidth={2.5}
+                  dot={false}
+                />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+
+          <div className="chart">
+            <h2>Chart B: Cumulative cost (BTC)</h2>
+            <ResponsiveContainer width="100%" height={300}>
+              <LineChart data={chartSeries} margin={{ top: 8, right: 24, left: 8, bottom: 8 }}>
+                <CartesianGrid strokeDasharray="3 3" />
+                <XAxis dataKey="year" label={{ value: "Year", position: "insideBottom", offset: -6 }} />
+                <YAxis
+                  width={120}
+                  scale={scaleMode}
+                  domain={scaleMode === "log" ? [minPositiveBtc, "auto"] : ["auto", "auto"]}
+                  tickFormatter={formatCompactBtc}
+                />
+                <Tooltip
+                  labelFormatter={(label) => `Year ${label}`}
+                  formatter={(value: number) => [formatBtc(value), "Cumulative BTC"]}
+                />
+                <Line
+                  type="monotone"
+                  dataKey="cumBtc"
+                  name="Cumulative BTC"
+                  stroke="#16a34a"
+                  strokeWidth={2.5}
+                  dot={false}
+                />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
         </section>
       </div>
     </main>
