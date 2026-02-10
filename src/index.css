@@ -78,27 +78,37 @@ body {
 }
 
 .control-row {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, auto) minmax(0, 1fr) max-content;
   align-items: center;
   gap: 10px;
 }
 
-.control-row input[type="range"] {
-  flex: 1;
+.control-row input[type="range"],
+.control-row input[type="number"],
+.control-row select {
+  grid-column: 2;
 }
 
-.control-row input[type="number"] {
-  width: 150px;
+.control-row input[type="number"],
+.control-row select {
+  width: 100%;
   border: 1px solid #cbd5e1;
   border-radius: 8px;
   padding: 8px 10px;
   font-size: 0.92rem;
 }
 
+.control-row--toggle {
+  grid-template-columns: minmax(0, auto) minmax(0, 1fr) max-content;
+}
+
 .value {
+  grid-column: 3;
   min-width: 120px;
   text-align: right;
   font-weight: 600;
+  white-space: nowrap;
 }
 
 .summary {
@@ -133,7 +143,14 @@ body {
   }
 
   .control-row {
-    flex-wrap: wrap;
+    grid-template-columns: 1fr;
+  }
+
+  .control-row input[type="range"],
+  .control-row input[type="number"],
+  .control-row select,
+  .value {
+    grid-column: 1;
   }
 
   .value {
