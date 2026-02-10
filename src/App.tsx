@@ -1,14 +1,22 @@
 import { useMemo, useState } from "react";
 import {
-  LineChart,
+  CartesianGrid,
+  Legend,
   Line,
+  LineChart,
+  ResponsiveContainer,
+  Tooltip,
   XAxis,
   YAxis,
-  CartesianGrid,
-  Tooltip,
-  Legend,
-  ResponsiveContainer,
 } from "recharts";
+
+type YearPoint = {
+  year: number;
+  ratio: number;
+  nominalExpense: number;
+  assetAdjustedExpense: number;
+  portfolio: number;
+};
 
 const formatPercent = (value: number) => `${value.toFixed(1)}%`;
 
@@ -20,194 +28,275 @@ const formatCurrency = (value: number) =>
     maximumFractionDigits: 2,
   }).format(value);
 
-const clampCurrencyInput = (value: number) =>
-  Math.min(Math.max(value, 1), 1_000_000);
+const formatCompactCurrency = (value: number) =>
+  new Intl.NumberFormat("en-US", {
+    notation: "compact",
+    style: "currency",
+    currency: "USD",
+    maximumFractionDigits: 1,
+  }).format(value);
+
+const clamp = (value: number, min: number, max: number) =>
+  Math.min(Math.max(value, min), max);
 
 const App = () => {
-  const [startingCost, setStartingCost] = useState(100);
-  const [assetInflation, setAssetInflation] = useState(7);
-  const [fiatDeflation, setFiatDeflation] = useState(3);
-  const [years, setYears] = useState(30);
+  const [inflationPercent, setInflationPercent] = useState(3.0);
+  const [assetGrowthPercent, setAssetGrowthPercent] = useState(7.0);
+  const [extraYears, setExtraYears] = useState(10);
+  const [annualExpenseToday, setAnnualExpenseToday] = useState(60_000);
+  const [startingPortfolio, setStartingPortfolio] = useState(1_000_000);
 
-  const { data, finalNominal, finalReal, netRate } = useMemo(() => {
-    const ai = assetInflation / 100;
-    const fd = fiatDeflation / 100;
-    const net = (1 + ai) / (1 + fd) - 1;
+  const {
+    series,
+    lifespanInflationFactor,
+    lifespanInflationPercent,
+    finalRatio,
+    finalNominalExpense,
+    finalAssetAdjustedExpense,
+    totalNominal,
+    totalAssetAdjusted,
+    avgNominal,
+    avgAssetAdjusted,
+    depletionYear,
+  } = useMemo(() => {
+    const i = inflationPercent / 100;
+    const a = assetGrowthPercent / 100;
 
-    const points = Array.from({ length: years + 1 }, (_, t) => {
-      const nominal = startingCost * Math.pow(1 + ai, t);
-      const real = nominal / Math.pow(1 + fd, t);
-      return {
-        year: t,
-        nominal,
-        real,
-      };
-    });
+    const ratioBase = (1 + i) / (1 + a);
+    const lif = Math.pow(ratioBase, extraYears) - 1;
 
-    const last = points[points.length - 1] ?? {
-      nominal: startingCost,
-      real: startingCost,
+    const points: YearPoint[] = [];
+    let runningNominalTotal = 0;
+    let runningAssetAdjustedTotal = 0;
+    let portfolio = startingPortfolio;
+    let depletion: number | null = null;
+
+    for (let k = 0; k <= extraYears; k += 1) {
+      const ratio = Math.pow(ratioBase, k);
+      const nominalExpense = annualExpenseToday * Math.pow(1 + i, k);
+      const assetAdjustedExpense = annualExpenseToday * ratio;
+
+      if (k > 0) {
+        runningNominalTotal += nominalExpense;
+        runningAssetAdjustedTotal += assetAdjustedExpense;
+      }
+
+      if (k > 0) {
+        portfolio = portfolio * (1 + a) - nominalExpense;
+        if (depletion === null && portfolio <= 0) {
+          depletion = k;
+        }
+      }
+
+      points.push({
+        year: k,
+        ratio,
+        nominalExpense,
+        assetAdjustedExpense,
+        portfolio,
+      });
+    }
+
+    const finalPoint = points[points.length - 1] ?? {
+      ratio: 1,
+      nominalExpense: annualExpenseToday,
+      assetAdjustedExpense: annualExpenseToday,
     };
+
+    const averageNominal = extraYears > 0 ? runningNominalTotal / extraYears : 0;
+    const averageAssetAdjusted =
+      extraYears > 0 ? runningAssetAdjustedTotal / extraYears : 0;
 
     return {
-      data: points,
-      finalNominal: last.nominal,
-      finalReal: last.real,
-      netRate: net,
+      series: points,
+      lifespanInflationFactor: lif,
+      lifespanInflationPercent: lif * 100,
+      finalRatio: finalPoint.ratio,
+      finalNominalExpense: finalPoint.nominalExpense,
+      finalAssetAdjustedExpense: finalPoint.assetAdjustedExpense,
+      totalNominal: runningNominalTotal,
+      totalAssetAdjusted: runningAssetAdjustedTotal,
+      avgNominal: averageNominal,
+      avgAssetAdjusted: averageAssetAdjusted,
+      depletionYear: depletion,
     };
-  }, [assetInflation, fiatDeflation, years, startingCost]);
+  }, [
+    inflationPercent,
+    assetGrowthPercent,
+    extraYears,
+    annualExpenseToday,
+    startingPortfolio,
+  ]);
 
   return (
-    <div className="page">
+    <main className="page">
       <div className="card">
         <header className="header">
-          <div>
-            <p className="eyebrow">Lifespan Inflation Model</p>
-            <h1>Cost Trajectory Over Time</h1>
-            <p className="subtext">
-              Compare nominal asset inflation to fiat-adjusted real costs as
-              purchasing power changes.
-            </p>
-          </div>
+          <p className="eyebrow">Lifespan Inflation Model</p>
+          <h1>Inflation-to-Asset Compounding Over Extra Years Lived</h1>
+          <p className="subtext">
+            Lifespan Inflation Factor = ((1 + i) / (1 + a))^T - 1
+          </p>
         </header>
 
-        <section className="controls">
+        <section className="controls" aria-label="Inputs">
           <div className="control">
-            <label htmlFor="startingCost">Starting cost (C0)</label>
+            <label htmlFor="inflation">Inflation (i)</label>
             <div className="control-row">
               <input
-                id="startingCost"
+                id="inflation"
+                type="range"
+                min={0}
+                max={20}
+                step={0.1}
+                value={inflationPercent}
+                onChange={(event) => setInflationPercent(Number(event.target.value))}
+              />
+              <span className="value">{formatPercent(inflationPercent)}</span>
+            </div>
+          </div>
+
+          <div className="control">
+            <label htmlFor="assetGrowth">Asset growth (a)</label>
+            <div className="control-row">
+              <input
+                id="assetGrowth"
+                type="range"
+                min={-10}
+                max={30}
+                step={0.1}
+                value={assetGrowthPercent}
+                onChange={(event) => setAssetGrowthPercent(Number(event.target.value))}
+              />
+              <span className="value">{formatPercent(assetGrowthPercent)}</span>
+            </div>
+          </div>
+
+          <div className="control">
+            <label htmlFor="extraYears">Extra years (T)</label>
+            <div className="control-row">
+              <input
+                id="extraYears"
+                type="range"
+                min={0}
+                max={60}
+                step={1}
+                value={extraYears}
+                onChange={(event) => setExtraYears(Number(event.target.value))}
+              />
+              <span className="value">{extraYears} yrs</span>
+            </div>
+          </div>
+
+          <div className="control">
+            <label htmlFor="annualExpense">Annual expenses today (E0)</label>
+            <div className="control-row">
+              <input
+                id="annualExpense"
                 type="number"
-                min={1}
-                max={1_000_000}
-                step={1}
-                value={startingCost}
+                min={0}
+                step={100}
+                value={annualExpenseToday}
                 onChange={(event) =>
-                  setStartingCost(
-                    clampCurrencyInput(Number(event.target.value))
-                  )
+                  setAnnualExpenseToday(clamp(Number(event.target.value) || 0, 0, 10_000_000))
                 }
               />
-              <span className="value">{formatCurrency(startingCost)}</span>
+              <span className="value">{formatCurrency(annualExpenseToday)}</span>
             </div>
           </div>
+
           <div className="control">
-            <label htmlFor="assetInflation">Asset inflation (ai)</label>
+            <label htmlFor="portfolio">Starting portfolio (P0)</label>
             <div className="control-row">
               <input
-                id="assetInflation"
+                id="portfolio"
                 type="range"
                 min={0}
-                max={30}
-                step={0.1}
-                value={assetInflation}
-                onChange={(event) =>
-                  setAssetInflation(Number(event.target.value))
-                }
+                max={5_000_000}
+                step={10_000}
+                value={startingPortfolio}
+                onChange={(event) => setStartingPortfolio(Number(event.target.value))}
               />
-              <span className="value">{formatPercent(assetInflation)}</span>
-            </div>
-          </div>
-          <div className="control">
-            <label htmlFor="fiatDeflation">Fiat deflation (fd)</label>
-            <div className="control-row">
-              <input
-                id="fiatDeflation"
-                type="range"
-                min={0}
-                max={30}
-                step={0.1}
-                value={fiatDeflation}
-                onChange={(event) =>
-                  setFiatDeflation(Number(event.target.value))
-                }
-              />
-              <span className="value">{formatPercent(fiatDeflation)}</span>
-            </div>
-          </div>
-          <div className="control">
-            <label htmlFor="years">Time (years)</label>
-            <div className="control-row">
-              <input
-                id="years"
-                type="range"
-                min={0}
-                max={80}
-                step={1}
-                value={years}
-                onChange={(event) => setYears(Number(event.target.value))}
-              />
-              <span className="value">{years} yrs</span>
+              <span className="value">{formatCurrency(startingPortfolio)}</span>
             </div>
           </div>
         </section>
 
-        <section className="summary">
+        <section className="summary" aria-label="Summary outputs">
           <div>
-            <span>Starting cost</span>
-            <strong>{formatCurrency(startingCost)}</strong>
+            <span>Lifespan Inflation Factor (LIF)</span>
+            <strong>{lifespanInflationFactor.toFixed(4)}</strong>
           </div>
           <div>
-            <span>Asset inflation (ai)</span>
-            <strong>{formatPercent(assetInflation)}</strong>
+            <span>Lifespan Inflation %</span>
+            <strong>{formatPercent(lifespanInflationPercent)}</strong>
           </div>
           <div>
-            <span>Fiat deflation (fd)</span>
-            <strong>{formatPercent(fiatDeflation)}</strong>
+            <span>Final ratio R(T)</span>
+            <strong>{finalRatio.toFixed(4)}</strong>
           </div>
           <div>
-            <span>Net effective rate (r_net)</span>
-            <strong>{formatPercent(netRate * 100)}</strong>
+            <span>Final nominal annual expense E_nom(T)</span>
+            <strong>{formatCurrency(finalNominalExpense)}</strong>
           </div>
           <div>
-            <span>Final nominal cost</span>
-            <strong>{formatCurrency(finalNominal)}</strong>
+            <span>Final asset-adjusted annual expense E_assetAdj(T)</span>
+            <strong>{formatCurrency(finalAssetAdjustedExpense)}</strong>
           </div>
           <div>
-            <span>Final real cost</span>
-            <strong>{formatCurrency(finalReal)}</strong>
+            <span>Total nominal expenses over extra years</span>
+            <strong>{formatCurrency(totalNominal)}</strong>
+          </div>
+          <div>
+            <span>Total asset-adjusted expenses over extra years</span>
+            <strong>{formatCurrency(totalAssetAdjusted)}</strong>
+          </div>
+          <div>
+            <span>Average nominal annual expense</span>
+            <strong>{formatCurrency(avgNominal)}</strong>
+          </div>
+          <div>
+            <span>Average asset-adjusted annual expense</span>
+            <strong>{formatCurrency(avgAssetAdjusted)}</strong>
+          </div>
+          <div>
+            <span>Portfolio depletion year</span>
+            <strong>{depletionYear === null ? "Not depleted" : `Year ${depletionYear}`}</strong>
           </div>
         </section>
 
-        <section className="chart">
+        <section className="chart" aria-label="Expense series chart">
           <ResponsiveContainer width="100%" height={360}>
-            <LineChart data={data} margin={{ top: 10, right: 20, left: 0, bottom: 10 }}>
-              <CartesianGrid strokeDasharray="4 4" />
-              <XAxis dataKey="year" tickMargin={8} />
-              <YAxis
-                tickFormatter={(value) =>
-                  new Intl.NumberFormat("en-US", {
-                    notation: "compact",
-                    maximumFractionDigits: 1,
-                  }).format(value)
-                }
-              />
+            <LineChart data={series} margin={{ top: 8, right: 24, left: 8, bottom: 8 }}>
+              <CartesianGrid strokeDasharray="3 3" />
+              <XAxis dataKey="year" label={{ value: "Year", position: "insideBottom", offset: -6 }} />
+              <YAxis tickFormatter={formatCompactCurrency} width={110} />
               <Tooltip
-                formatter={(value: number) => formatCurrency(value)}
                 labelFormatter={(label) => `Year ${label}`}
+                formatter={(value: number, name: string) => [formatCurrency(value), name]}
               />
               <Legend />
               <Line
                 type="monotone"
-                dataKey="nominal"
-                name="Nominal cost"
+                dataKey="nominalExpense"
+                name="Nominal annual expense E_nom(k)"
                 stroke="#2563eb"
-                strokeWidth={3}
+                strokeWidth={2.5}
                 dot={false}
               />
               <Line
                 type="monotone"
-                dataKey="real"
-                name="Fiat-adjusted real cost"
-                stroke="#10b981"
-                strokeWidth={3}
+                dataKey="assetAdjustedExpense"
+                name="Asset-adjusted annual expense E_assetAdj(k)"
+                stroke="#16a34a"
+                strokeWidth={2.5}
                 dot={false}
               />
             </LineChart>
           </ResponsiveContainer>
         </section>
       </div>
-    </div>
+    </main>
   );
 };
 
