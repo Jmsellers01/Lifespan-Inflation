@@ -111,6 +111,11 @@ body {
   white-space: nowrap;
 }
 
+.meta {
+  color: #64748b;
+  font-size: 0.79rem;
+}
+
 .summary {
   background: #f8fafc;
   border: 1px solid #e2e8f0;
@@ -132,9 +137,24 @@ body {
   font-size: 1.03rem;
 }
 
+.chart-stack {
+  display: grid;
+  gap: 16px;
+}
+
 .chart {
   width: 100%;
-  min-height: 360px;
+  min-height: 340px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 14px;
+  padding: 12px 12px 8px;
+}
+
+.chart h2 {
+  margin: 4px 8px;
+  font-size: 1.02rem;
+  color: #0f172a;
 }
 
 @media (max-width: 640px) {
